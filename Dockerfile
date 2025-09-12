@@ -11,7 +11,9 @@ RUN apk add --no-cache \
     freetype-dev \
     harfbuzz \
     ca-certificates \
-    ttf-freefont
+    ttf-freefont \
+    fontconfig \
+    && fc-cache -f
 
 # Tell Puppeteer to skip installing Chromium. We'll be using the installed package.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
@@ -24,7 +26,7 @@ WORKDIR /app
 COPY package.json ./
 
 # Install Node.js dependencies
-RUN npm install --omit=dev --no-cache && \
+RUN npm install --only=production --no-cache && \
     # Clean up npm cache to reduce image size
     npm cache clean --force
 
@@ -40,15 +42,20 @@ RUN chmod +x ./scripts/*.sh && \
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S apimanager -u 1001 -G nodejs
 
-# Change ownership of app directory
-RUN chown -R apimanager:nodejs /app
+# Create necessary directories for Puppeteer
+RUN mkdir -p /app/.cache/puppeteer && \
+    mkdir -p /tmp && \
+    chown -R apimanager:nodejs /app && \
+    chown -R apimanager:nodejs /tmp
 
 # Switch to non-root user
 USER apimanager
 
 # Set environment variables for Node.js
 ENV NODE_PATH=/app/node_modules \
-    NODE_ENV=production
+    NODE_ENV=production \
+    HOME=/app \
+    PUPPETEER_CACHE_DIR=/app/.cache/puppeteer
 
 # Health check for container
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
@@ -64,4 +71,5 @@ LABEL maintainer="N8N API Management Team" \
       org.opencontainers.image.title="N8N API Manager" \
       org.opencontainers.image.description="Automated N8N API key creation and management for Northflank deployments" \
       org.opencontainers.image.version="1.0.0" \
-      org.opencontainers.image.vendor="N8N API Management Team"
+      org.opencontainers.image.vendor="N8N API Management Team" \
+      org.opencontainers.image.source="https://github.com/7on-ai/n8n-api-manager"
