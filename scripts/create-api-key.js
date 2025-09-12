@@ -24,6 +24,9 @@ class N8NAPIManager {
         // Optional webhook
         this.webhookUrl = process.env.WEBHOOK_URL;
         
+        // Mode flag - if true, also store all credentials
+        this.storeCredentials = process.env.STORE_API_KEY_MODE === 'true';
+        
         // Initialize Supabase client
         if (this.supabaseUrl && this.supabaseKey) {
             this.supabase = createClient(this.supabaseUrl, this.supabaseKey, {
@@ -53,6 +56,9 @@ class N8NAPIManager {
         }
         
         console.log('✅ Environment validation passed');
+        if (this.storeCredentials) {
+            console.log('📦 Running in credentials storage mode');
+        }
     }
 
     async waitForN8NReady() {
@@ -279,6 +285,31 @@ class N8NAPIManager {
         }
     }
 
+    async checkExistingUser() {
+        if (!this.supabase) {
+            return null;
+        }
+        
+        try {
+            console.log('🔍 Checking if user record exists...');
+            
+            const { data, error } = await this.supabase
+                .from('launchmvpfast-saas-starterkit_user')
+                .select('id, email, n8n_api_key, n8n_api_key_label')
+                .eq('id', this.userId)
+                .single();
+            
+            if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+                throw error;
+            }
+            
+            return data;
+        } catch (error) {
+            console.error('⚠️ Failed to check existing user:', error.message);
+            return null;
+        }
+    }
+
     async storeCredentialsInSupabase(apiKeyData) {
         console.log('💾 Storing credentials in Supabase...');
         
@@ -286,36 +317,52 @@ class N8NAPIManager {
             throw new Error('Supabase client not initialized');
         }
         
+        const existingUser = await this.checkExistingUser();
+        
         const credentialsData = {
-            user_id: this.userId,
-            project_id: this.projectId,
-            project_name: this.projectName,
+            email: this.email,
             n8n_url: this.baseUrl,
             n8n_user_email: this.email,
             n8n_user_password: this.password,
             n8n_encryption_key: this.encryptionKey,
             n8n_api_key: apiKeyData.apiKey,
             n8n_api_key_label: apiKeyData.label,
-            api_key_created_at: apiKeyData.createdAt,
+            n8n_api_key_created_at: apiKeyData.createdAt,
             northflank_project_id: this.projectId,
             northflank_project_name: this.projectName,
+            northflank_project_status: 'ready',
             template_completed_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
         
         try {
-            const { data, error } = await this.supabase
-                .from('launchmvpfast-saas-starterkit_user')
-                .update(credentialsData)
-                .eq('id', this.userId)
-                .select();
+            let result;
             
-            if (error) {
-                throw error;
+            if (existingUser) {
+                console.log('📝 Updating existing user record...');
+                const { data, error } = await this.supabase
+                    .from('launchmvpfast-saas-starterkit_user')
+                    .update(credentialsData)
+                    .eq('id', this.userId)
+                    .select();
+                
+                if (error) throw error;
+                result = data;
+            } else {
+                console.log('🆕 Creating new user record...');
+                credentialsData.id = this.userId;
+                
+                const { data, error } = await this.supabase
+                    .from('launchmvpfast-saas-starterkit_user')
+                    .insert(credentialsData)
+                    .select();
+                
+                if (error) throw error;
+                result = data;
             }
             
             console.log('✅ Credentials stored successfully');
-            return data;
+            return result;
             
         } catch (error) {
             console.error('❌ Failed to store credentials:', error.message);
@@ -333,7 +380,7 @@ class N8NAPIManager {
         
         const notificationData = {
             status: 'success',
-            message: 'N8N API key created successfully',
+            message: 'N8N API key created and credentials stored successfully',
             timestamp: new Date().toISOString(),
             userId: this.userId,
             data: {
@@ -342,7 +389,8 @@ class N8NAPIManager {
                 projectId: this.projectId,
                 projectName: this.projectName,
                 apiKeyLabel: apiKeyData.label,
-                apiKeyCreated: apiKeyData.createdAt
+                apiKeyCreated: apiKeyData.createdAt,
+                credentialsStored: this.storeCredentials
             }
         };
         
@@ -369,12 +417,13 @@ class N8NAPIManager {
 
     async run() {
         console.log('========================================');
-        console.log('🚀 N8N API Manager Starting...');
+        console.log('🚀 N8N API Manager & Credentials Storage');
         console.log('========================================');
         console.log(`📧 User Email: ${this.email}`);
         console.log(`🔗 N8N URL: ${this.baseUrl}`);
         console.log(`🆔 User ID: ${this.userId}`);
         console.log(`🏗️ Project: ${this.projectName} (${this.projectId})`);
+        console.log(`📦 Store Credentials: ${this.storeCredentials ? 'Yes' : 'No'}`);
         console.log('========================================');
         
         try {
@@ -390,18 +439,24 @@ class N8NAPIManager {
                 throw new Error('Created API key failed validation');
             }
             
-            // Store in Supabase
-            await this.storeCredentialsInSupabase(apiKeyData);
+            // Store credentials in Supabase (this replaces the need for store-credentials-job)
+            if (this.storeCredentials) {
+                await this.storeCredentialsInSupabase(apiKeyData);
+            }
             
             // Send webhook notification
             await this.sendWebhookNotification(apiKeyData);
             
             console.log('========================================');
-            console.log('🎉 N8N API Management Completed Successfully!');
+            console.log('🎉 All Operations Completed Successfully!');
             console.log('========================================');
             console.log(`✅ API Key Created: ${apiKeyData.label}`);
-            console.log(`✅ Credentials Stored in Supabase`);
+            if (this.storeCredentials) {
+                console.log(`✅ Credentials Stored in Supabase`);
+            }
             console.log(`✅ Project: ${this.projectName}`);
+            console.log(`✅ N8N URL: ${this.baseUrl}`);
+            console.log(`✅ User: ${this.email}`);
             console.log('========================================');
             
             return {
@@ -415,6 +470,23 @@ class N8NAPIManager {
             console.error('❌ N8N API Management Failed!');
             console.error('========================================');
             console.error('Error:', error.message);
+            
+            // Try to update status as failed in Supabase
+            if (this.storeCredentials && this.supabase) {
+                try {
+                    await this.supabase
+                        .from('launchmvpfast-saas-starterkit_user')
+                        .update({
+                            northflank_project_status: 'failed',
+                            n8n_setup_error: error.message,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', this.userId);
+                } catch (updateError) {
+                    console.error('Failed to update error status:', updateError.message);
+                }
+            }
+            
             console.error('========================================');
             throw error;
         }
